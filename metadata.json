@@ -1,0 +1,8 @@
+{
+  "name": "FormAssist AR",
+  "description": "An AR-powered assistant that helps users fill out physical forms by overlaying their personal information onto the camera view using Gemini AI.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
