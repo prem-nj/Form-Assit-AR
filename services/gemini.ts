@@ -4,10 +4,10 @@ import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { UserProfile, FormFieldOverlay, Language } from '../types';
 
 // Initialize Gemini Client
-// The API key is guaranteed to be in process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// The API key is guaranteed to be in process.env.GEMINI_API_KEY
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const textModelName = 'gemini-2.5-flash';
+const textModelName = 'gemini-3-flash-preview';
 
 /**
  * Extracts user profile information from an uploaded ID card image.
@@ -107,7 +107,7 @@ export const analyzeFormAndMapData = async (
         type: Type.OBJECT,
         properties: {
           fieldName: { type: Type.STRING, description: "The name of the field identified on the form (e.g., 'Name', 'Account No', 'PAN Number')" },
-          valueToFill: { type: Type.STRING, description: "The value from the user profile that should be written here. Use the most appropriate field from the profile (e.g., use panNumber for 'PAN No'). If no match, leave empty." },
+          valueToFill: { type: Type.STRING, description: "The value from the user profile that should be written here. Use the most appropriate field from the profile. If no match, leave empty." },
           boundingBox: {
             type: Type.OBJECT,
             properties: {
@@ -125,21 +125,30 @@ export const analyzeFormAndMapData = async (
     };
 
     const prompt = `
-      Analyze this physical form image. Identify the blank fields where a user needs to write information.
+      Analyze this physical form image. Your goal is to identify the BLANK SPACES (dotted lines, boxes, or empty areas) where a user needs to write their information.
+      
+      CRITICAL INSTRUCTION: The 'boundingBox' MUST be the coordinates of the EMPTY SPACE or DOTTED LINE where the text will be written. DO NOT include the field label text (like "Name:", "Address:", etc.) in the bounding box. The box should represent exactly where the user should place their pen.
       
       Here is the User's Master Profile Data:
       ${JSON.stringify(userProfile)}
       
       For each identifying field on the form:
-      1. Determine what information is asked.
-      2. INTELLIGENTLY MATCH it with the User Profile Data. 
-         - If form asks for "PAN", use 'panNumber'.
-         - If form asks for "Aadhar", use 'aadharNumber'.
-         - If form asks for "Gender", use 'gender'.
-         - If form asks for "Father's Name", use 'guardianName'.
-         - If form asks for details in 'extraFields', use those.
-      3. Return the 'valueToFill' exactly as it should be written.
-      4. Provide the bounding box for the *blank space* where the user should write.
+      1. Identify the label (e.g., "Full Name", "Gender").
+      2. Find the BLANK SPACE (dotted line, box, or checkbox) immediately next to or below that label.
+      3. If the field is a set of OPTIONS (like Gender: M [ ] F [ ]), target the specific box [ ] that matches the user's profile data.
+      4. INTELLIGENTLY MATCH the label with the User Profile Data:
+         - "Full Name", "Name", "Applicant Name" -> 'fullName'
+         - "PAN", "Permanent Account Number" -> 'panNumber'
+         - "Aadhar", "UID", "Aadhaar" -> 'aadharNumber'
+         - "Gender", "Sex" -> 'gender'
+         - "Father's Name", "Husband's Name", "Guardian" -> 'guardianName'
+         - "DOB", "Date of Birth" -> 'dateOfBirth'
+         - "Address", "Residential Address", "House No" -> 'address'
+         - "Mobile", "Phone", "Contact No" -> 'phoneNumber'
+         - "Email", "Email ID" -> 'email'
+         - For other labels, check 'extraFields'.
+      4. Return the 'valueToFill' exactly as it should be written.
+      5. Provide the bounding box for the BLANK SPACE only.
       
       Coordinates must be on a scale of 0 to 1000.
     `;

@@ -102,7 +102,9 @@ type TranslationKeys =
   | 'analyze'
   | 'summary'
   | 'viewList'
-  | 'fieldsListTitle';
+  | 'fieldsListTitle'
+  | 'uploadForm'
+  | 'uploadFormDesc';
 
 export const translations: Record<Language, Record<TranslationKeys, string>> = {
   en: {
@@ -205,7 +207,9 @@ export const translations: Record<Language, Record<TranslationKeys, string>> = {
     analyze: "Analyze Form",
     summary: "Summary",
     viewList: "List View",
-    fieldsListTitle: "Fields to Fill"
+    fieldsListTitle: "Fields to Fill",
+    uploadForm: "Upload Form/PDF",
+    uploadFormDesc: "Upload a form image or PDF from your device"
   },
   hi: {
     appTitle: "फ़ॉर्म असिस्ट AI",
@@ -307,7 +311,9 @@ export const translations: Record<Language, Record<TranslationKeys, string>> = {
     analyze: "विश्लेषण करें",
     summary: "सारांश",
     viewList: "सूची देखें",
-    fieldsListTitle: "भरने के लिए फ़ील्ड"
+    fieldsListTitle: "भरने के लिए फ़ील्ड",
+    uploadForm: "फ़ॉर्म/PDF अपलोड करें",
+    uploadFormDesc: "अपने डिवाइस से फ़ॉर्म की छवि या PDF अपलोड करें"
   },
   bn: {
     appTitle: "ফর্ম অ্যাসিস্ট AI",
@@ -409,6 +415,8 @@ export const translations: Record<Language, Record<TranslationKeys, string>> = {
     analyze: "বিশ্লেষণ করুন",
     summary: "सारांश",
     viewList: "তালিকা দেখুন",
-    fieldsListTitle: "পূরণ করার ক্ষেত্র"
+    fieldsListTitle: "পূরণ করার ক্ষেত্র",
+    uploadForm: "ফর্ম/PDF আপলোড করুন",
+    uploadFormDesc: "আপনার ডিভাইস থেকে ফর্মের ছবি বা PDF আপলোড করুন"
   },
 };

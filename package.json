@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@google/genai": "*",
+    "pdfjs-dist": "^5.5.207",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "@google/genai": "*"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",

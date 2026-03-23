@@ -10,9 +10,11 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       // Inject the API Key from the environment
-      'process.env.API_KEY': JSON.stringify(env.API_KEY || process.env.API_KEY),
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || process.env.GEMINI_API_KEY),
       // Polyfill process.env to prevent "process is not defined" errors in the browser
-      'process.env': {}
+      'process.env': {
+        NODE_ENV: JSON.stringify(mode),
+      }
     },
   };
 });

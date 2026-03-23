@@ -18,6 +18,7 @@ export const Onboarding = ({
 }) => {
   const t = translations[language];
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<{ message: string, isQuota: boolean } | null>(null);
   const [formData, setFormData] = useState<Partial<UserProfile> | null>(null);
   const [extraFields, setExtraFields] = useState<ExtraField[]>([]);
   const [selectedDocType, setSelectedDocType] = useState('Auto-Detect');
@@ -51,6 +52,7 @@ export const Onboarding = ({
     if (!files || files.length === 0) return;
 
     setLoading(true);
+    setError(null);
     let mergedProfile = { ...(formData || initialProfile || {}) };
     let mergedExtraFields = [...(extraFields || [])];
     const newDocs: UploadedDocument[] = [];
@@ -134,9 +136,16 @@ export const Onboarding = ({
       setUpdateMessage(`Successfully processed ${newDocs.length} document(s).`);
       setExtractedFieldsInfo(newExtractedInfo);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Failed to extract data. Please try again.");
+      const errStr = JSON.stringify(err).toLowerCase();
+      const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+      setError({
+        message: isQuota 
+          ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+          : "Failed to extract data. Please ensure the image is clear and try again.",
+        isQuota
+      });
     } finally {
       setLoading(false);
       // Reset input so same file can be selected again if needed
@@ -229,6 +238,30 @@ export const Onboarding = ({
              </h2>
           </div>
           
+          {error && (
+              <div className="mb-6 animate-slideUp">
+                  <div className={`p-4 rounded-xl flex items-start ${error.isQuota ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'}`}>
+                      <div className="mr-3 mt-0.5">
+                          {error.isQuota ? (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          ) : (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          )}
+                      </div>
+                      <div className="flex-1">
+                          <p className="text-sm font-bold mb-1">{error.isQuota ? "Limit Reached" : "Error"}</p>
+                          <p className="text-xs opacity-90">{error.message}</p>
+                          <div className="flex space-x-3 mt-2">
+                              {error.isQuota && (
+                                  <button onClick={() => { setError(null); fileInputRef.current?.click(); }} className="text-[10px] font-bold uppercase tracking-wider underline">Try Again</button>
+                              )}
+                              <button onClick={() => setError(null)} className="text-[10px] font-bold uppercase tracking-wider underline opacity-60">Dismiss</button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          )}
+
           {updateMessage && (
               <div className="mb-6 animate-slideUp">
                   <div className="p-4 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-xl flex items-center mb-2">
@@ -421,6 +454,30 @@ export const Onboarding = ({
        <div className="flex-1 flex flex-col px-6 pb-8">
           <p className="text-slate-500 dark:text-slate-400 mb-6 font-medium text-sm">{t.uploadIdInstructions}</p>
           
+          {error && (
+              <div className="mb-6 animate-slideUp">
+                  <div className={`p-4 rounded-xl flex items-start ${error.isQuota ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'}`}>
+                      <div className="mr-3 mt-0.5">
+                          {error.isQuota ? (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          ) : (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          )}
+                      </div>
+                      <div className="flex-1">
+                          <p className="text-sm font-bold mb-1">{error.isQuota ? "Limit Reached" : "Error"}</p>
+                          <p className="text-xs opacity-90">{error.message}</p>
+                          <div className="flex space-x-3 mt-2">
+                              {error.isQuota && (
+                                  <button onClick={() => { setError(null); fileInputRef.current?.click(); }} className="text-[10px] font-bold uppercase tracking-wider underline">Try Again</button>
+                              )}
+                              <button onClick={() => setError(null)} className="text-[10px] font-bold uppercase tracking-wider underline opacity-60">Dismiss</button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          )}
+
           <div className="flex space-x-2 overflow-x-auto pb-4 no-scrollbar mb-4">
              {['Auto-Detect', 'Aadhar Card', 'PAN Card', 'Passport', 'Driver\'s License', 'Other'].map(type => (
                 <button 

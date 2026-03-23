@@ -84,6 +84,20 @@ const GlobalStyles = () => (
     .animate-fadeInUp {
       animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .animate-fadeIn {
+      animation: fadeIn 0.3s ease-out forwards;
+    }
+    @keyframes modalEnter {
+      from { opacity: 0; transform: scale(0.9) translateY(20px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .animate-modalEnter {
+      animation: modalEnter 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    }
   `}</style>
 );
 

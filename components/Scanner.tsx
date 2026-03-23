@@ -2,9 +2,15 @@
 
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore - Vite specific import
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { UserProfile, Language, FormFieldOverlay, FormTemplate, ScanResult } from '../types';
 import { analyzeFormAndMapData, getFormExplanation, askFormQuestion } from '../services/gemini';
 import { translations } from '../translations';
+
+// Set worker path for PDF.js using Vite's asset handling
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 export const Scanner = ({ 
   language, 
@@ -25,8 +31,10 @@ export const Scanner = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [analyzing, setAnalyzing] = useState(false);
+  const [error, setError] = useState<{ message: string, isQuota: boolean } | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [imageDimensions, setImageDimensions] = useState<{width: number, height: number} | null>(null);
   const [speaking, setSpeaking] = useState(false);
@@ -47,11 +55,34 @@ export const Scanner = ({
   const [speechEnabled, setSpeechEnabled] = useState(true);
   const [responseText, setResponseText] = useState<string | null>(null);
 
+  const applyMappingFallback = useCallback((overlays: FormFieldOverlay[]) => {
+    return overlays.map(overlay => {
+        if (overlay.valueToFill && overlay.valueToFill.trim() !== '') return overlay;
+        
+        const key = overlay.fieldName.toLowerCase();
+        let newValue = overlay.valueToFill;
+        
+        if (key.includes('name')) newValue = userProfile.fullName;
+        else if (key.includes('birth') || key.includes('dob')) newValue = userProfile.dateOfBirth;
+        else if (key.includes('address')) newValue = userProfile.address;
+        else if (key.includes('phone') || key.includes('mobile')) newValue = userProfile.phoneNumber;
+        else if (key.includes('pan')) newValue = userProfile.panNumber || '';
+        else if (key.includes('aadhar') || key.includes('uid')) newValue = userProfile.aadharNumber || '';
+        else if (key.includes('email')) newValue = userProfile.email;
+        else if (key.includes('gender') || key.includes('sex')) newValue = userProfile.gender || '';
+        
+        return { ...overlay, valueToFill: newValue || '' };
+    });
+  }, [userProfile]);
+
   // Cleanup Camera Function
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop());
         streamRef.current = null;
+    }
+    if (videoRef.current) {
+        videoRef.current.srcObject = null;
     }
   }, []);
 
@@ -99,11 +130,21 @@ export const Scanner = ({
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        // IMPORTANT: play() returns a Promise.
-        await videoRef.current.play();
+        try {
+          // IMPORTANT: play() returns a Promise. Handle interruptions.
+          await videoRef.current.play();
+        } catch (playErr: any) {
+          // Ignore AbortError which happens when play() is interrupted by a new load or pause
+          if (playErr.name !== 'AbortError') {
+            console.error("Video play error:", playErr);
+          }
+        }
       }
       
     } catch (err: any) {
+      // If the error is because the component unmounted or stream was stopped during setup
+      if (err.name === 'AbortError') return;
+
       console.error("Camera access error:", err);
       
       const errorName = err.name || '';
@@ -171,12 +212,21 @@ export const Scanner = ({
     }
 
     setAnalyzing(true);
+    setError(null);
     try {
       const overlays = await analyzeFormAndMapData(base64, userProfile);
-      setResult({ image: base64, overlays });
-    } catch (err) {
+      const finalOverlays = applyMappingFallback(overlays);
+      setResult({ image: base64, overlays: finalOverlays });
+    } catch (err: any) {
       console.error(err);
-      alert("Analysis failed. Try again.");
+      const errStr = JSON.stringify(err).toLowerCase();
+      const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+      setError({
+        message: isQuota 
+          ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+          : "Analysis failed. Please ensure the form is clear and try again.",
+        isQuota
+      });
       video.play();
     } finally {
       setAnalyzing(false);
@@ -192,13 +242,104 @@ export const Scanner = ({
     // startCamera will be triggered by useEffect when result becomes null
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setAnalyzing(true);
+    setError(null);
+    stopCamera();
+
+    try {
+      if (file.type === 'application/pdf') {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const page = await pdf.getPage(1);
+        
+        const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        
+        if (!context) throw new Error("Could not create canvas context");
+        
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        await page.render({ canvasContext: context, viewport, canvas }).promise;
+        
+        const base64 = canvas.toDataURL('image/jpeg', 0.9);
+        setImageDimensions({ width: canvas.width, height: canvas.height });
+        
+        const overlays = await analyzeFormAndMapData(base64, userProfile);
+        const finalOverlays = applyMappingFallback(overlays);
+        setResult({ image: base64, overlays: finalOverlays });
+      } else {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          const base64 = event.target?.result as string;
+          
+          const img = new Image();
+          img.onload = async () => {
+            setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+            try {
+              const overlays = await analyzeFormAndMapData(base64, userProfile);
+              const finalOverlays = applyMappingFallback(overlays);
+              setResult({ image: base64, overlays: finalOverlays });
+            } catch (err: any) {
+              console.error(err);
+              const errStr = JSON.stringify(err).toLowerCase();
+              const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+              setError({
+                message: isQuota 
+                  ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+                  : "Analysis failed. Please ensure the form is clear and try again.",
+                isQuota
+              });
+            } finally {
+              setAnalyzing(false);
+            }
+          };
+          img.src = base64;
+        };
+        reader.readAsDataURL(file);
+        return; // Exit early as FileReader is async
+      }
+    } catch (err: any) {
+      console.error("File processing error:", err);
+      const errStr = JSON.stringify(err).toLowerCase();
+      const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+      setError({
+        message: isQuota 
+          ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+          : "Failed to process file. Please try an image instead.",
+        isQuota
+      });
+    } finally {
+      // Only set false if not using FileReader which has its own finally/catch
+      if (file.type === 'application/pdf') {
+        setAnalyzing(false);
+      }
+    }
+  };
+
   const handleExplainForm = async () => {
     if (!result) return;
     setSpeaking(true);
+    setError(null);
     try {
         const text = await getFormExplanation(result.image, language);
         setResponseText(text);
         speak(text);
+    } catch (err: any) {
+        console.error(err);
+        const errStr = JSON.stringify(err).toLowerCase();
+        const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+        setError({
+            message: isQuota 
+                ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+                : "Could not explain the form. Please try again.",
+            isQuota
+        });
     } finally {
         setSpeaking(false);
     }
@@ -223,10 +364,24 @@ export const Scanner = ({
           const question = event.results[0][0].transcript;
           setListening(false);
           setSpeaking(true);
-          const answer = await askFormQuestion(result.image, question, language);
-          setResponseText(answer);
-          speak(answer);
-          setSpeaking(false);
+          setError(null);
+          try {
+              const answer = await askFormQuestion(result.image, question, language);
+              setResponseText(answer);
+              speak(answer);
+          } catch (err: any) {
+              console.error(err);
+              const errStr = JSON.stringify(err).toLowerCase();
+              const isQuota = errStr.includes('429') || errStr.includes('quota') || errStr.includes('resource_exhausted') || err.status === 429;
+              setError({
+                  message: isQuota 
+                      ? "AI Service Limit Reached: The AI is currently at its free usage limit. Please wait a few minutes or try again later today."
+                      : "Could not answer the question. Please try again.",
+                  isQuota
+              });
+          } finally {
+              setSpeaking(false);
+          }
       };
 
       recognition.onerror = () => {
@@ -252,7 +407,23 @@ export const Scanner = ({
              <p className="text-slate-400 mb-6 max-w-xs mx-auto">
                  The camera only works on secure (HTTPS) connections. Please check your URL.
              </p>
-             <button onClick={onClose} className="px-6 py-3 bg-slate-800 rounded-xl font-bold">Go Back</button>
+             <div className="flex flex-col space-y-3 w-full max-w-xs">
+                <button 
+                    onClick={() => fileInputRef.current?.click()} 
+                    className="w-full px-6 py-3 bg-blue-600 rounded-xl font-bold shadow-lg flex items-center justify-center"
+                >
+                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    {t.uploadForm}
+                </button>
+                <button onClick={onClose} className="w-full px-6 py-3 bg-slate-800 rounded-xl font-bold">Go Back</button>
+             </div>
+             <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept="image/*,application/pdf" 
+                onChange={handleFileUpload}
+             />
         </div>
       );
   }
@@ -275,15 +446,31 @@ export const Scanner = ({
                     </>
                  )}
               </p>
-              <div className="flex space-x-4">
-                  <button onClick={onClose} className="px-6 py-3 bg-slate-800 rounded-xl font-bold">Go Back</button>
+              <div className="flex flex-col space-y-3 w-full max-w-xs mx-auto">
                   <button 
-                    onClick={startCamera} 
-                    className="px-6 py-3 bg-blue-600 rounded-xl font-bold shadow-lg hover:bg-blue-500"
+                    onClick={() => fileInputRef.current?.click()} 
+                    className="w-full px-6 py-3 bg-blue-600 rounded-xl font-bold shadow-lg flex items-center justify-center"
                   >
-                      Retry Camera
+                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    {t.uploadForm}
                   </button>
+                  <div className="flex space-x-3">
+                      <button onClick={onClose} className="flex-1 px-4 py-3 bg-slate-800 rounded-xl font-bold">Go Back</button>
+                      <button 
+                        onClick={startCamera} 
+                        className="flex-1 px-4 py-3 bg-slate-700 rounded-xl font-bold shadow-lg hover:bg-slate-600"
+                      >
+                          Retry Camera
+                      </button>
+                  </div>
               </div>
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept="image/*,application/pdf" 
+                onChange={handleFileUpload}
+              />
           </div>
       );
   }
@@ -348,6 +535,31 @@ export const Scanner = ({
         {/* Alignment Overlay - Only visible when not analyzing and no result */}
         {!result && !analyzing && (
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+                {/* Error Message if any */}
+                {error && (
+                    <div className="absolute top-20 left-6 right-6 pointer-events-auto animate-slideUp z-50">
+                        <div className={`p-4 rounded-xl flex items-start ${error.isQuota ? 'bg-amber-100/90 backdrop-blur-md text-amber-900' : 'bg-red-100/90 backdrop-blur-md text-red-900'}`}>
+                            <div className="mr-3 mt-0.5">
+                                {error.isQuota ? (
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                ) : (
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                )}
+                            </div>
+                            <div className="flex-1">
+                                <p className="text-xs font-bold mb-1">{error.isQuota ? "AI Limit Reached" : "Error"}</p>
+                                <p className="text-[10px] opacity-90 leading-tight">{error.message}</p>
+                                <div className="flex space-x-3 mt-2">
+                                    {error.isQuota && (
+                                        <button onClick={() => { setError(null); captureAndAnalyze(); }} className="text-[10px] font-bold uppercase tracking-wider underline">Try Again</button>
+                                    )}
+                                    <button onClick={() => setError(null)} className="text-[10px] font-bold uppercase tracking-wider underline opacity-60">Dismiss</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Darkened backdrop (Simulated via large shadow on the frame) */}
                 <div className="relative w-[85%] aspect-[3/4] max-w-md rounded-3xl overflow-hidden shadow-[0_0_0_100vmax_rgba(0,0,0,0.5)]">
                     {/* Corner Indicators */}
@@ -373,6 +585,31 @@ export const Scanner = ({
         {/* Result Image & Overlays */}
         {result && (
              <div className="relative w-full h-full flex items-center justify-center bg-black">
+                {/* Error Message if any */}
+                {error && (
+                    <div className="absolute top-20 left-6 right-6 pointer-events-auto animate-slideUp z-50">
+                        <div className={`p-4 rounded-xl flex items-start ${error.isQuota ? 'bg-amber-100/90 backdrop-blur-md text-amber-900' : 'bg-red-100/90 backdrop-blur-md text-red-900'}`}>
+                            <div className="mr-3 mt-0.5">
+                                {error.isQuota ? (
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                ) : (
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                )}
+                            </div>
+                            <div className="flex-1">
+                                <p className="text-xs font-bold mb-1">{error.isQuota ? "AI Limit Reached" : "Error"}</p>
+                                <p className="text-[10px] opacity-90 leading-tight">{error.message}</p>
+                                <div className="flex space-x-3 mt-2">
+                                    {error.isQuota && (
+                                        <button onClick={() => { setError(null); captureAndAnalyze(); }} className="text-[10px] font-bold uppercase tracking-wider underline">Try Again</button>
+                                    )}
+                                    <button onClick={() => setError(null)} className="text-[10px] font-bold uppercase tracking-wider underline opacity-60">Dismiss</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                
                 <div 
                     className="relative"
                     style={{
@@ -399,10 +636,10 @@ export const Scanner = ({
                         return (
                             <div
                                 key={index}
-                                className={`absolute border-2 flex items-center justify-center transition-all duration-300 overflow-hidden 
+                                className={`absolute flex items-end justify-start transition-all duration-300 
                                     ${isActive 
-                                        ? 'bg-blue-500/10 z-20 animate-pulse-glow' 
-                                        : 'border-green-400/50 bg-green-400/5'
+                                        ? 'z-20' 
+                                        : 'z-10'
                                     }
                                 `}
                                 style={{
@@ -412,32 +649,33 @@ export const Scanner = ({
                                     height: `${height}%`,
                                 }}
                             >
-                                {/* Subtle Shimmer for all boxes */}
-                                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full animate-shimmer"></div>
-
-                                {!isGuidedMode && (
-                                    <div 
-                                        className="absolute -top-8 left-1/2 bg-white text-slate-900 text-[10px] font-bold px-2 py-1 rounded shadow-md whitespace-nowrap z-10 animate-fadeInUp"
-                                        style={{ animationDelay: `${index * 0.1}s` }}
+                                {/* The "Filled" Text - No more green box, just the data */}
+                                <div className={`w-full h-full flex items-end justify-start`}>
+                                    <span 
+                                        className={`font-mono font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap transition-all duration-300 ${isActive ? 'opacity-100 scale-105' : 'opacity-90'}`}
+                                        style={{ 
+                                            fontSize: `min(${height * 1.2}vh, 20px)`, // Reduced size
+                                            textShadow: '1px 1px 0px rgba(255,255,255,0.8)',
+                                            letterSpacing: '0.02em',
+                                            transform: 'translateY(2px)', // Adjusted nudge
+                                            display: 'block',
+                                            lineHeight: '1.2'
+                                        }}
                                     >
                                         {overlay.valueToFill}
-                                        {/* Little arrow down */}
-                                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-white rotate-45"></div>
-                                    </div>
-                                )}
+                                    </span>
+                                </div>
+
                                 {isActive && (
                                     <>
-                                        {/* Tech Corners */}
-                                        <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-blue-400 -mt-0.5 -ml-0.5"></div>
-                                        <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-blue-400 -mt-0.5 -mr-0.5"></div>
-                                        <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-blue-400 -mb-0.5 -ml-0.5"></div>
-                                        <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-blue-400 -mb-0.5 -mr-0.5"></div>
+                                        {/* Minimal Active Indicator - Subtle glow under the text */}
+                                        <div className="absolute -bottom-1 left-0 w-full h-0.5 bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)] animate-pulse"></div>
 
-                                        <div className="absolute -top-14 left-1/2 bg-blue-600 text-white text-sm font-bold px-4 py-2 rounded-xl shadow-xl whitespace-nowrap z-30 animate-fadeInUp flex items-center">
-                                            <span className="mr-2">✏️</span>
-                                            <span>Write: {overlay.valueToFill}</span>
+                                        <div className="absolute -top-10 left-0 bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-md shadow-lg whitespace-nowrap z-30 animate-modalEnter flex items-center">
+                                            <span className="mr-1">✏️</span>
+                                            <span>{overlay.fieldName}</span>
                                             {/* Arrow */}
-                                            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-blue-600 rotate-45"></div>
+                                            <div className="absolute -bottom-1 left-2 w-2 h-2 bg-blue-600 rotate-45"></div>
                                         </div>
                                     </>
                                 )}
@@ -486,12 +724,32 @@ export const Scanner = ({
       <div className="p-6 pb-10 bg-gradient-to-t from-black to-transparent space-y-4">
          {!result && !analyzing && (
             <div className="flex flex-col items-center">
-               <button 
-                 onClick={captureAndAnalyze}
-                 className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center mb-4 active:scale-95 transition-transform bg-white/20 backdrop-blur-sm"
-               >
-                 <div className="w-16 h-16 bg-white rounded-full shadow-inner"></div>
-               </button>
+               <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  className="hidden" 
+                  accept="image/*,application/pdf" 
+                  onChange={handleFileUpload}
+               />
+               <div className="flex items-center space-x-8 mb-4">
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-14 h-14 rounded-full bg-white/10 backdrop-blur-md flex items-center justify-center text-white border border-white/20 active:scale-95 transition-transform"
+                    title={t.uploadForm}
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                  </button>
+
+                  <button 
+                    onClick={captureAndAnalyze}
+                    className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center active:scale-95 transition-transform bg-white/20 backdrop-blur-sm"
+                  >
+                    <div className="w-16 h-16 bg-white rounded-full shadow-inner"></div>
+                  </button>
+
+                  <div className="w-14 h-14"></div> {/* Spacer for symmetry */}
+               </div>
+               <p className="text-white/60 text-xs font-medium uppercase tracking-widest">{t.captureAnalyze}</p>
             </div>
          )}
          
@@ -547,36 +805,38 @@ export const Scanner = ({
 
       {/* Field List Modal */}
       {showFieldList && result && (
-        <div className="absolute inset-0 bg-black/90 z-50 flex flex-col p-6 animate-fadeInUp">
-            <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-white">{t.fieldsListTitle}</h2>
-                <button onClick={() => setShowFieldList(false)} className="p-2 bg-white/10 rounded-full text-white hover:bg-white/20 transition-colors">
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-3 pb-8">
-                {result.overlays.map((item, idx) => (
-                    <div key={idx} className="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                        <p className="text-xs text-slate-400 font-bold uppercase mb-1 tracking-wider">{t.field}: {item.fieldName}</p>
-                        <div className="bg-blue-900/30 p-3 rounded-lg border border-blue-500/30 flex items-start mt-2">
-                            <span className="text-blue-400 mr-3 mt-0.5">✏️</span>
-                            <span className="text-blue-100 font-mono font-medium text-lg break-words">{item.valueToFill}</span>
+        <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4 sm:p-6 animate-fadeIn">
+            <div className="bg-slate-900 w-full max-w-lg max-h-[85vh] rounded-[2.5rem] flex flex-col p-6 shadow-2xl border border-white/10 animate-modalEnter">
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-xl font-bold text-white">{t.fieldsListTitle}</h2>
+                    <button onClick={() => setShowFieldList(false)} className="p-2 bg-white/10 rounded-full text-white hover:bg-white/20 transition-colors">
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+                    {result.overlays.map((item, idx) => (
+                        <div key={idx} className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50">
+                            <p className="text-[10px] text-slate-400 font-bold uppercase mb-1 tracking-wider">{t.field}: {item.fieldName}</p>
+                            <div className="bg-blue-900/20 p-3 rounded-xl border border-blue-500/20 flex items-start mt-2">
+                                <span className="text-blue-400 mr-3 mt-0.5">✏️</span>
+                                <span className="text-blue-100 font-mono font-medium text-base break-words">{item.valueToFill}</span>
+                            </div>
                         </div>
-                    </div>
-                ))}
-            </div>
-            <div className="pt-4 border-t border-slate-800">
-                <button onClick={() => setShowFieldList(false)} className="w-full py-4 bg-white text-black font-bold rounded-xl">
-                    Close List
-                </button>
+                    ))}
+                </div>
+                <div className="pt-6 mt-2">
+                    <button onClick={() => setShowFieldList(false)} className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform">
+                        Close List
+                    </button>
+                </div>
             </div>
         </div>
       )}
 
       {/* Save Template Dialog */}
       {showSaveTemplate && result && (
-          <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-50">
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl w-full max-w-sm">
+          <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-50 animate-fadeIn">
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl w-full max-w-sm animate-modalEnter">
                   <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{t.saveTemplate}</h3>
                   <p className="text-slate-500 dark:text-slate-400 text-sm mb-4">{t.saveTemplateDesc}</p>
                   <input 
